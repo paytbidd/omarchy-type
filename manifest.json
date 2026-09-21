@@ -9,20 +9,11 @@
   "license": "MIT",
   "kinds": [
     "service",
-    "panel",
-    "bar-widget"
+    "panel"
   ],
   "keepLoaded": true,
   "entryPoints": {
     "service": "Service.qml",
-    "panel": "Panel.qml",
-    "barWidget": "TypeWidget.qml"
-  },
-  "barWidget": {
-    "displayName": "Type",
-    "description": "Omarchy font on Chromium apps",
-    "category": "Appearance",
-    "allowMultiple": false,
-    "defaultSection": "right"
+    "panel": "Panel.qml"
   }
 }

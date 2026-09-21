@@ -7,8 +7,8 @@ Open it from Super+Space → Style → Type (or type “type” in the command
 menu). The panel is a list: per-app On/Off, a master On/Off, scale, Add
 from installed apps, and × to remove so that app is never skinned.
 
-The **Tt** bar chip is optional. This plugin stays on without sitting on
-the bar.
+There is no bar chip. This plugin stays on as a service and a summoned
+panel.
 
 `~/.config/omarchy/type.json` holds the list. A Chromium content-script
 extension is generated at `~/.local/share/omarchy-type/chromium-ext`. Font
@@ -21,12 +21,7 @@ omarchy plugin add https://github.com/paytbidd/omarchy-type.git --yes
 omarchy plugin enable payton.type
 ```
 
-That enables Type without a bar chip. Super+Space → Style → Type opens
-the panel. To put **Tt** on the bar:
-
-```bash
-omarchy bar put payton.type --section right
-```
+Super+Space → Style → Type opens the panel.
 ## CLI
 
 ```bash

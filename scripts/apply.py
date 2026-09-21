@@ -120,10 +120,9 @@ def youtube_css(family: str, scale: float) -> str:
     pct = css_percent(scale)
     return (
         f"html.omarchy-type{{font-size:{pct} !important;}}"
-        f"html.omarchy-type,html.omarchy-type body,html.omarchy-type ytd-app,"
-        f"html.omarchy-type yt-formatted-string,html.omarchy-type #content{{"
-        f"font-family:{q}, Roboto, sans-serif !important;}}"
-        f"html.omarchy-type *{{font-family:{q}, Roboto, Arial, sans-serif !important;}}"
+        f"html,body,ytd-app,#content,yt-formatted-string,tp-yt-paper-item,"
+        f"#text,.title,.ytp-title-link{{font-family:{q}, \"YouTube Noto\", Roboto, sans-serif !important;}}"
+        f"*{{font-family:{q}, Roboto, Arial, sans-serif !important;}}"
     )
 
 
@@ -146,6 +145,7 @@ def write_chromium_extension(cfg: dict, family: str) -> None:
         baked[spec["id"]] = {
             "hosts": spec["hosts"],
             "css": CSS_FOR[spec["id"]](family, row["scale"]),
+            "shadow": spec["id"] == "youtube",
         }
         for host in spec["hosts"]:
             matches.append(f"https://{host}/*")

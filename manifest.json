@@ -2,18 +2,20 @@
   "schemaVersion": 1,
   "id": "payton.type",
   "name": "Omarchy Type",
-  "version": "1.1.3",
+  "version": "1.2.0",
   "author": "Payton Biddington",
   "description": "Apply the Omarchy font to Chromium webapps and Electron apps.",
   "homepage": "https://github.com/paytbidd/omarchy-type",
   "license": "MIT",
   "kinds": [
     "service",
+    "panel",
     "bar-widget"
   ],
   "keepLoaded": true,
   "entryPoints": {
     "service": "Service.qml",
+    "panel": "Panel.qml",
     "barWidget": "TypeWidget.qml"
   },
   "barWidget": {

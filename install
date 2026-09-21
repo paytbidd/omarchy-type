@@ -16,4 +16,4 @@ chmod +x "$HOOK"
 python3 "$PLUGIN/scripts/apply.py" apply
 omarchy plugin enable payton.type --section right --yes 2>/dev/null || \
   omarchy plugin enable payton.type --section right || true
-echo "Omarchy Type installed. Click Aa on the bar."
+echo "Omarchy Type installed. Click Tt on the bar."

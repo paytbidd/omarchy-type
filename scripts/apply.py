@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Apply Omarchy Type to enabled Chromium/Electron surfaces."""
+"""Apply Omarchy Type to enabled apps."""
 from __future__ import annotations
 
 import json
-import math
 import os
 import re
+import shlex
+import signal
 import socket
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -18,22 +20,44 @@ HOME = Path.home()
 CONFIG_PATH = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "omarchy" / "type.json"
 FLAGS_PATH = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "chromium-flags.conf"
 EXT_DIR = Path(os.environ.get("XDG_DATA_HOME", HOME / ".local/share")) / "omarchy-type" / "chromium-ext"
-FONTCONF = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "fontconfig" / "conf.d" / "51-omarchy-type-grok.conf"
+FONTCONF = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "fontconfig" / "conf.d" / "51-omarchy-type.conf"
+OLD_GROK_FONTCONF = FONTCONF.with_name("51-omarchy-type-grok.conf")
 GROK_DESKTOP = Path(os.environ.get("XDG_DATA_HOME", HOME / ".local/share")) / "applications" / "grok-bot.desktop"
 YT_DESKTOP = Path(os.environ.get("XDG_DATA_HOME", HOME / ".local/share")) / "applications" / "YouTube.desktop"
-OMARCHY_CHROMIUM_EXTS = Path("/usr/share/omarchy/default/chromium/extensions")
+CHROMIUM_DESKTOP = Path(os.environ.get("XDG_DATA_HOME", HOME / ".local/share")) / "applications" / "chromium.desktop"
+CHROMIUM_PREFS = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "chromium" / "Default" / "Preferences"
 AM_PROFILE = Path(os.environ.get("XDG_DATA_HOME", HOME / ".local/share")) / "omarchy-apple-music" / "chromium-profile"
 PLUGIN_DIR = Path(__file__).resolve().parent.parent
-
-SURFACES = [
-    {"id": "apple-music", "label": "Apple Music", "kind": "chromium",
-     "hosts": ["music.apple.com"], "defaultEnabled": True, "defaultScale": 0.92},
-    {"id": "grok-bot", "label": "Grok Bot", "kind": "electron",
-     "hosts": [], "defaultEnabled": True, "defaultScale": 1.0},
-    {"id": "youtube", "label": "YouTube", "kind": "chromium",
-     "hosts": ["youtube.com", "www.youtube.com", "youtu.be", "m.youtube.com"],
-     "defaultEnabled": False, "defaultScale": 0.94},
+DESKTOP_DIRS = [
+    Path(os.environ.get("XDG_DATA_HOME", HOME / ".local/share")) / "applications",
+    Path("/usr/share/applications"),
 ]
+TYPE_DESKTOP_MARK = "# omarchy-type"
+
+RECIPES = {
+    "apple-music": {
+        "id": "apple-music", "label": "Apple Music", "desktop": "omarchy-apple-music.desktop",
+        "kind": "chromium", "hosts": ["music.apple.com"], "defaultEnabled": True, "defaultScale": 0.92,
+    },
+    "grok-bot": {
+        "id": "grok-bot", "label": "Grok Bot", "desktop": "grok-bot.desktop",
+        "kind": "electron", "hosts": [], "defaultEnabled": True, "defaultScale": 1.0,
+    },
+    "youtube": {
+        "id": "youtube", "label": "YouTube", "desktop": "YouTube.desktop",
+        "kind": "chromium",
+        "hosts": ["youtube.com", "youtu.be", "m.youtube.com"],
+        "defaultEnabled": False, "defaultScale": 0.94,
+    },
+}
+DEFAULT_IDS = ["apple-music", "grok-bot", "youtube"]
+KINDS = {"chromium", "electron", "other"}
+BROWSER_DESKTOPS = {
+    "chromium.desktop", "google-chrome.desktop", "google-chrome-stable.desktop",
+    "brave-origin.desktop", "brave.desktop",
+}
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+COMPATIBLE_KINDS = {"chromium", "electron"}
 
 
 def log(msg: str) -> None:
@@ -50,41 +74,126 @@ def current_font() -> str:
     return "sans-serif"
 
 
+def clamp_scale(value) -> float:
+    try:
+        scale = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    if 0.7 <= scale <= 1.2:
+        return round(scale, 2)
+    return 1.0
+
+
+def recipe_app(rid: str, enabled: bool | None = None, scale: float | None = None) -> dict:
+    r = RECIPES[rid]
+    return {
+        "id": r["id"],
+        "label": r["label"],
+        "desktop": r["desktop"],
+        "kind": r["kind"],
+        "hosts": list(r.get("hosts") or []),
+        "enabled": r["defaultEnabled"] if enabled is None else enabled,
+        "scale": r["defaultScale"] if scale is None else clamp_scale(scale),
+    }
+
+
+def default_apps() -> list[dict]:
+    return [recipe_app(rid) for rid in DEFAULT_IDS]
+
+
+def sanitize_app(row: dict) -> dict | None:
+    if not isinstance(row, dict):
+        return None
+    app_id = str(row.get("id") or "").strip()
+    if not app_id:
+        return None
+    recipe = RECIPES.get(app_id)
+    kind = str(row.get("kind") or (recipe["kind"] if recipe else "chromium"))
+    if kind == "chromium-ui":
+        return None
+    if kind not in KINDS:
+        kind = recipe["kind"] if recipe else "other"
+    hosts = []
+    raw_hosts = row.get("hosts")
+    if not raw_hosts and recipe:
+        raw_hosts = recipe["hosts"]
+    if isinstance(raw_hosts, list):
+        for host in raw_hosts:
+            h = str(host or "").strip()
+            if h.startswith("www."):
+                h = h[4:]
+            if h and h not in hosts:
+                hosts.append(h)
+    scale = row.get("scale")
+    if scale is None and recipe:
+        scale = recipe["defaultScale"]
+    return {
+        "id": app_id,
+        "label": str(row.get("label") or (recipe["label"] if recipe else app_id)),
+        "desktop": str(row.get("desktop") or (recipe["desktop"] if recipe else f"{app_id}.desktop")),
+        "kind": kind,
+        "hosts": hosts,
+        "enabled": row.get("enabled") is not False,
+        "scale": clamp_scale(scale),
+    }
+
+
+def migrate_surfaces(surfaces: dict) -> list[dict]:
+    apps = default_apps()
+    by_id = {a["id"]: a for a in apps}
+    if not isinstance(surfaces, dict):
+        return apps
+    for sid, row in surfaces.items():
+        if sid not in by_id or not isinstance(row, dict):
+            continue
+        if isinstance(row.get("enabled"), bool):
+            by_id[sid]["enabled"] = row["enabled"]
+        if "scale" in row:
+            by_id[sid]["scale"] = clamp_scale(row.get("scale"))
+    return apps
+
+
 def default_config() -> dict:
-    return {"surfaces": {s["id"]: {"enabled": s["defaultEnabled"], "scale": s["defaultScale"]} for s in SURFACES}}
+    return {"enabled": True, "apps": default_apps()}
 
 
 def load_config() -> dict:
-    data = default_config()
+    raw: dict = {}
     if CONFIG_PATH.is_file():
         try:
-            raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                raw = loaded
         except Exception:
             raw = {}
-        incoming = raw.get("surfaces") if isinstance(raw, dict) else {}
-        if isinstance(incoming, dict):
-            for sid, row in incoming.items():
-                if sid not in data["surfaces"] or not isinstance(row, dict):
-                    continue
-                if isinstance(row.get("enabled"), bool):
-                    data["surfaces"][sid]["enabled"] = row["enabled"]
-                scale = row.get("scale")
-                try:
-                    scale_f = float(scale)
-                except (TypeError, ValueError):
-                    continue
-                if 0.7 <= scale_f <= 1.2:
-                    data["surfaces"][sid]["scale"] = round(scale_f, 2)
-    return data
+    enabled = raw.get("enabled", True)
+    if not isinstance(enabled, bool):
+        enabled = True
+    if isinstance(raw.get("apps"), list):
+        apps = []
+        seen = set()
+        for row in raw["apps"]:
+            app = sanitize_app(row) if isinstance(row, dict) else None
+            if not app or app["id"] in seen:
+                continue
+            seen.add(app["id"])
+            apps.append(app)
+    else:
+        apps = migrate_surfaces(raw.get("surfaces") if isinstance(raw.get("surfaces"), dict) else {})
+    return {"enabled": enabled, "apps": apps}
 
 
 def save_config(cfg: dict) -> None:
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    payload = {
+        "enabled": bool(cfg.get("enabled", True)),
+        "apps": [sanitize_app(a) for a in cfg.get("apps", []) if sanitize_app(a)],
+    }
+    CONFIG_PATH.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def css_percent(scale: float) -> str:
-    return f"{int(round(float(scale) * 100))}%"
+    return f"{int(round(float(clamp_scale(scale)) * 100))}%"
 
 
 def apple_music_css(family: str, scale: float) -> str:
@@ -119,47 +228,90 @@ def grok_bot_css(family: str, scale: float) -> str:
 
 def youtube_css(family: str, scale: float) -> str:
     q = json.dumps(family)
-    pct = css_percent(scale)
+    z = f"{clamp_scale(scale):.2f}"
+    guide = max(260, int(round(280 * clamp_scale(scale))))
+    masthead = max(52, int(round(56 * max(clamp_scale(scale), 0.95))))
     return (
-        f"html.omarchy-type{{font-size:{pct} !important;}}"
-        f"html,body,ytd-app,#content,yt-formatted-string,tp-yt-paper-item,"
-        f"#text,.title,.ytp-title-link{{font-family:{q}, \"YouTube Noto\", Roboto, sans-serif !important;}}"
-        f"*{{font-family:{q}, Roboto, Arial, sans-serif !important;}}"
+        f"html.omarchy-type,html.omarchy-type body,html.omarchy-type ytd-app,"
+        f"html.omarchy-type yt-formatted-string,html.omarchy-type tp-yt-paper-item,"
+        f"html.omarchy-type #content,html.omarchy-type *{{font-family:{q}, Roboto, Arial, sans-serif !important;}}"
+        f"html.omarchy-type ytd-app{{--ytd-guide-width:{guide}px !important;"
+        f"--app-drawer-width:{guide}px !important;--ytd-masthead-height:{masthead}px !important;}}"
+        f"html.omarchy-type ytd-masthead,html.omarchy-type #masthead-container,html.omarchy-type #header{{"
+        f"min-height:{masthead}px !important;height:{masthead}px !important;"
+        f"font-size:14px !important;zoom:1 !important;}}"
+        f"html.omarchy-type ytd-guide-renderer,html.omarchy-type #guide-content,"
+        f"html.omarchy-type #guide-inner-content{{width:{guide}px !important;min-width:{guide}px !important;}}"
+        f"html.omarchy-type #guide yt-formatted-string,html.omarchy-type ytd-guide-entry-renderer{{"
+        f"font-size:13px !important;}}"
+        f"html.omarchy-type ytd-page-manager,html.omarchy-type #page-manager,"
+        f"html.omarchy-type ytd-browse,html.omarchy-type ytd-watch-flexy{{zoom:{z} !important;}}"
     )
 
 
-CSS_FOR = {
-    "apple-music": apple_music_css,
-    "grok-bot": grok_bot_css,
-    "youtube": youtube_css,
-}
+def generic_css(family: str, scale: float) -> str:
+    q = json.dumps(family)
+    pct = css_percent(scale)
+    return (
+        f"html.omarchy-type{{font-family:{q}, ui-sans-serif, sans-serif !important;font-size:{pct} !important;}}"
+        "html.omarchy-type body,html.omarchy-type button,html.omarchy-type input,"
+        "html.omarchy-type textarea,html.omarchy-type select,html.omarchy-type *"
+        f"{{font-family:{q}, ui-sans-serif, sans-serif !important;}}"
+    )
+
+
+def css_for_app(app: dict, family: str) -> str:
+    scale = app.get("scale", 1)
+    if app["id"] == "apple-music":
+        return apple_music_css(family, scale)
+    if app["id"] == "grok-bot":
+        return grok_bot_css(family, scale)
+    if app["id"] == "youtube":
+        return youtube_css(family, scale)
+    if app["kind"] == "chromium":
+        return generic_css(family, scale)
+    if app["kind"] == "electron":
+        return grok_bot_css(family, scale)
+    return ""
+
+
+def find_app(cfg: dict, app_id: str) -> dict | None:
+    for app in cfg["apps"]:
+        if app["id"] == app_id:
+            return app
+    return None
+
+
+def app_active(cfg: dict, app: dict) -> bool:
+    return bool(cfg.get("enabled", True) and app.get("enabled", True))
 
 
 def write_chromium_extension(cfg: dict, family: str) -> None:
     baked = {}
     matches = []
-    for spec in SURFACES:
-        if spec["kind"] != "chromium":
-            continue
-        row = cfg["surfaces"][spec["id"]]
-        if not row["enabled"]:
-            continue
-        baked[spec["id"]] = {
-            "hosts": spec["hosts"],
-            "css": CSS_FOR[spec["id"]](family, row["scale"]),
-            "shadow": spec["id"] == "youtube",
-        }
-        for host in spec["hosts"]:
-            matches.append(f"https://{host}/*")
-            if not host.startswith("www."):
-                matches.append(f"https://www.{host}/*")
+    if cfg.get("enabled", True):
+        for app in cfg["apps"]:
+            if app["kind"] != "chromium" or not app["enabled"]:
+                continue
+            css = css_for_app(app, family)
+            if not css or not app["hosts"]:
+                continue
+            baked[app["id"]] = {
+                "hosts": app["hosts"],
+                "css": css,
+                "shadow": True,
+            }
+            for host in app["hosts"]:
+                matches.append(f"https://{host}/*")
+                if not host.startswith("www."):
+                    matches.append(f"https://www.{host}/*")
     EXT_DIR.mkdir(parents=True, exist_ok=True)
     (EXT_DIR / "sw.js").write_text("self.addEventListener('install', () => {});\n", encoding="utf-8")
     match_list = sorted(set(matches)) or ["https://example.invalid/*"]
     (EXT_DIR / "manifest.json").write_text(json.dumps({
         "manifest_version": 3,
         "name": "Omarchy Type",
-        "version": "1.0.1",
+        "version": "1.1.0",
         "background": {"service_worker": "sw.js"},
         "host_permissions": match_list,
         "content_scripts": [{
@@ -176,55 +328,101 @@ def write_chromium_extension(cfg: dict, family: str) -> None:
     )
 
 
-def ensure_chromium_flags() -> None:
-    ext = str(EXT_DIR)
+def _flag_line_key(line: str) -> str:
+    if line.startswith("--") and "=" in line:
+        return line.split("=", 1)[0]
+    return line.strip()
+
+
+def ensure_chromium_flags(cfg: dict, family: str) -> None:
     FLAGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     lines = FLAGS_PATH.read_text(encoding="utf-8").splitlines() if FLAGS_PATH.is_file() else []
-    out = []
-    found = False
+    out: list[str] = []
+    found_ext = False
+    want_ext = False
+    if cfg.get("enabled", True):
+        want_ext = any(a["kind"] == "chromium" and a["enabled"] and a["hosts"] for a in cfg["apps"])
+    ext = str(EXT_DIR)
     for line in lines:
+        key = _flag_line_key(line)
         if line.startswith("--load-extension="):
-            found = True
-            parts = line.split("=", 1)[1].split(",")
-            parts = [p for p in parts if p and "omarchy-type/chromium-ext" not in p]
-            parts.append(ext)
-            out.append("--load-extension=" + ",".join(parts))
-        else:
-            out.append(line)
-    if not found:
+            found_ext = True
+            parts = [p for p in line.split("=", 1)[1].split(",") if p and "omarchy-type/chromium-ext" not in p]
+            if want_ext:
+                parts.append(ext)
+            if parts:
+                out.append("--load-extension=" + ",".join(parts))
+            continue
+        if key in ("--system-font-family", "--force-device-scale-factor"):
+            continue
+        out.append(line)
+    if want_ext and not found_ext:
         out.append(f"--load-extension={ext}")
-    if out and out[-1] != "":
-        out.append("")
+    while out and out[-1] == "":
+        out.pop()
+    out.append("")
     FLAGS_PATH.write_text("\n".join(out), encoding="utf-8")
 
 
-def write_grok_fontconfig(family: str, enabled: bool) -> None:
+def xml_escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def write_fontconfig(cfg: dict, family: str) -> None:
     FONTCONF.parent.mkdir(parents=True, exist_ok=True)
-    if not enabled:
+    if OLD_GROK_FONTCONF.exists():
+        OLD_GROK_FONTCONF.unlink()
+    names: list[str] = []
+    if cfg.get("enabled", True):
+        for app in cfg["apps"]:
+            if not app["enabled"]:
+                continue
+            if app["kind"] not in ("electron", "other"):
+                continue
+            names.extend(_prg_names_for(app))
+    names = list(dict.fromkeys(n for n in names if n))
+    if not names:
         if FONTCONF.exists():
             FONTCONF.unlink()
         return
-    xml_font = (family.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+    xml_font = xml_escape(family)
     families = [
         "sans-serif", "system-ui", "ui-sans-serif", "ui-monospace", "Segoe UI",
         "Inter", "SF Pro", "SF Pro Text", "-apple-system", "BlinkMacSystemFont",
         "Roboto", "Helvetica", "Arial", "Liberation Sans",
     ]
     blocks = []
-    for prg in ("grok-bot", "Grok Bot"):
+    for prg in names:
+        xml_prg = xml_escape(prg)
         for fam in families:
-            xml_fam = fam.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            blocks.append(f"""  <match target="pattern">
-    <test name="prgname"><string>{prg}</string></test>
-    <test name="family" qual="any"><string>{xml_fam}</string></test>
-    <edit name="family" mode="prepend_first" binding="strong"><string>{xml_font}</string></edit>
-  </match>""")
+            xml_fam = xml_escape(fam)
+            blocks.append(
+                "  <match target=\"pattern\">\n"
+                f"    <test name=\"prgname\"><string>{xml_prg}</string></test>\n"
+                f"    <test name=\"family\" qual=\"any\"><string>{xml_fam}</string></test>\n"
+                f"    <edit name=\"family\" mode=\"prepend_first\" binding=\"strong\"><string>{xml_font}</string></edit>\n"
+                "  </match>"
+            )
     FONTCONF.write_text(
         '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">\n'
-        f"<fontconfig>\n  <description>Omarchy Type for Grok Bot ({xml_font})</description>\n"
+        f"<fontconfig>\n  <description>Omarchy Type ({xml_font})</description>\n"
         + "\n".join(blocks) + "\n</fontconfig>\n",
         encoding="utf-8",
     )
+
+
+def _prg_names_for(app: dict) -> list[str]:
+    if app["id"] == "grok-bot":
+        return ["grok-bot", "Grok Bot"]
+    desktop = find_desktop_path(app.get("desktop") or "")
+    parsed = parse_desktop(desktop) if desktop else {}
+    exec_line = parsed.get("Exec") or ""
+    try:
+        token = shlex.split(exec_line, posix=True)[0]
+    except ValueError:
+        token = exec_line.split()[0] if exec_line.split() else ""
+    name = Path(token).name
+    return [name] if name else []
 
 
 def write_grok_desktop(enabled: bool) -> None:
@@ -268,6 +466,45 @@ def write_youtube_desktop(enabled: bool) -> None:
         if "launch-youtube" in text:
             text = re.sub(r"^Exec=.*$", stock, text, count=1, flags=re.M)
             YT_DESKTOP.write_text(text, encoding="utf-8")
+
+
+def clear_chromium_ui(family: str) -> None:
+    if CHROMIUM_DESKTOP.is_file():
+        text = CHROMIUM_DESKTOP.read_text(encoding="utf-8", errors="replace")
+        if TYPE_DESKTOP_MARK in text:
+            CHROMIUM_DESKTOP.unlink()
+    if not CHROMIUM_PREFS.is_file():
+        return
+    try:
+        data = json.loads(CHROMIUM_PREFS.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    if not isinstance(data, dict):
+        return
+    webkit = data.get("webkit")
+    if not isinstance(webkit, dict):
+        return
+    webprefs = webkit.get("webprefs")
+    if not isinstance(webprefs, dict):
+        return
+    changed = False
+    fonts = webprefs.get("fonts")
+    if isinstance(fonts, dict):
+        for generic in ("standard", "sansserif", "serif", "fixed"):
+            slot = fonts.get(generic)
+            if isinstance(slot, dict) and slot.get("Zyyy") == family:
+                slot.pop("Zyyy", None)
+                changed = True
+    if webprefs.get("default_font_size") in (14, 15):
+        webprefs["default_font_size"] = 16
+        webprefs["default_fixed_font_size"] = 13
+        changed = True
+    if not changed:
+        return
+    try:
+        CHROMIUM_PREFS.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
+    except OSError:
+        log("could not restore Chromium preferences")
 
 
 def _ws_send(sock: socket.socket, payload: str) -> None:
@@ -355,61 +592,428 @@ def inject_cdp(devtools_port_file: Path, css: str, timeout: float = 2.0) -> bool
     return ok
 
 
+def parse_desktop(path: Path) -> dict[str, str]:
+    data: dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return data
+    in_entry = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            in_entry = line == "[Desktop Entry]"
+            continue
+        if not in_entry or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key not in data:
+            data[key] = value
+    return data
+
+
+def find_desktop_path(desktop_id: str) -> Path | None:
+    name = desktop_id if desktop_id.endswith(".desktop") else f"{desktop_id}.desktop"
+    for directory in DESKTOP_DIRS:
+        path = directory / name
+        if path.is_file():
+            return path
+    return None
+
+
+def hosts_from_wmclass(wmclass: str) -> list[str]:
+    wm = str(wmclass or "")
+    if wm.startswith("chrome-") and "__" in wm:
+        host = wm[len("chrome-"):].split("__", 1)[0].removeprefix("www.")
+        if host and "." in host:
+            return [host]
+    return []
+
+
+def hosts_from_exec(exec_line: str) -> list[str]:
+    urls = re.findall(r"https?://[^\s\"']+", exec_line)
+    app = re.search(r"--app=([^\s]+)", exec_line)
+    if app:
+        urls.append(app.group(1).strip("\"'"))
+    hosts = []
+    for url in urls:
+        host = (urlparse(url).hostname or "").removeprefix("www.")
+        if host and host not in LOCAL_HOSTS:
+            hosts.append(host)
+    return list(dict.fromkeys(hosts))
+
+
+def _exec_token(exec_line: str) -> Path | None:
+    try:
+        parts = shlex.split(exec_line, posix=True)
+    except ValueError:
+        parts = exec_line.split()
+    if not parts:
+        return None
+    token = Path(parts[0])
+    if token.is_absolute():
+        return token
+    from shutil import which
+    found = which(parts[0])
+    return Path(found) if found else token
+
+
+def is_electron_command(exec_line: str) -> bool:
+    low = exec_line.lower()
+    if any(s in low for s in ("electron", "grok-bot", "launch-grok")):
+        return True
+    path = _exec_token(exec_line)
+    if not path:
+        return False
+    try:
+        head = path.read_text(encoding="utf-8", errors="replace")[:8000]
+    except OSError:
+        head = ""
+    if head.startswith("#!") and ("asar" in head or "electron" in head.lower()):
+        return True
+    bases = [path.parent, path.parent / "resources", Path("/usr/lib") / path.stem, Path("/usr/share") / path.stem]
+    return any(
+        (base / name).is_file()
+        for base in bases
+        for name in ("app.asar", "resources/app.asar", "obsidian.asar")
+    )
+
+
+def recipe_for_desktop(desktop_id: str, hosts: list[str]) -> dict | None:
+    name = desktop_id if desktop_id.endswith(".desktop") else f"{desktop_id}.desktop"
+    for recipe in RECIPES.values():
+        if recipe["desktop"].lower() == name.lower():
+            return recipe
+        recipe_hosts = {h.removeprefix("www.") for h in recipe.get("hosts") or []}
+        if recipe_hosts and recipe_hosts.intersection(h.removeprefix("www.") for h in hosts):
+            return recipe
+    return None
+
+
+def classify_desktop(desktop_id: str, parsed: dict[str, str]) -> tuple[str, list[str]]:
+    hosts = hosts_from_exec(parsed.get("Exec") or "") or hosts_from_wmclass(parsed.get("StartupWMClass") or "")
+    recipe = recipe_for_desktop(desktop_id, hosts)
+    if recipe:
+        return recipe["kind"], list(recipe.get("hosts") or hosts)
+    name = desktop_id.lower()
+    exec_line = parsed.get("Exec") or ""
+    if name in BROWSER_DESKTOPS:
+        return "skip", []
+    if is_electron_command(exec_line):
+        return "electron", hosts
+    if "omarchy-launch-webapp" in exec_line or "--app=" in exec_line or hosts:
+        if not hosts:
+            return "skip", []
+        return "chromium", hosts
+    return "skip", []
+
+
+def desktop_to_app(path: Path) -> dict | None:
+    parsed = parse_desktop(path)
+    if parsed.get("Type", "Application") not in ("Application", ""):
+        return None
+    if parsed.get("NoDisplay", "").lower() == "true":
+        return None
+    if parsed.get("Hidden", "").lower() == "true":
+        return None
+    if not parsed.get("Name"):
+        return None
+    desktop_id = path.name
+    hosts: list[str]
+    kind, hosts = classify_desktop(desktop_id, parsed)
+    if kind not in COMPATIBLE_KINDS:
+        return None
+    if kind == "chromium" and not hosts:
+        return None
+    recipe = recipe_for_desktop(desktop_id, hosts)
+    if recipe:
+        return recipe_app(recipe["id"], enabled=True)
+    slug = re.sub(r"[^a-z0-9]+", "-", path.stem.lower()).strip("-") or path.stem.lower()
+    return {
+        "id": slug,
+        "label": parsed["Name"],
+        "desktop": desktop_id,
+        "kind": kind,
+        "hosts": hosts,
+        "enabled": True,
+        "scale": 1.0,
+    }
+
+
+def list_installed_apps(cfg: dict | None = None) -> list[dict]:
+    taken = set()
+    if cfg:
+        for app in cfg["apps"]:
+            taken.add(app["id"])
+            taken.add(app.get("desktop") or "")
+            taken.add((app.get("desktop") or "").lower())
+    found: dict[str, dict] = {}
+    for directory in DESKTOP_DIRS:
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*.desktop")):
+            if path.name in taken or path.name.lower() in taken:
+                continue
+            app = desktop_to_app(path)
+            if not app or app["kind"] not in COMPATIBLE_KINDS:
+                continue
+            if app["id"] in taken or app["id"] in found:
+                continue
+            found[app["id"]] = {
+                "id": app["id"],
+                "label": app["label"],
+                "desktop": app["desktop"],
+                "kind": app["kind"],
+            }
+    return sorted(found.values(), key=lambda a: a["label"].lower())
+
+
 def apply() -> int:
     cfg = load_config()
     family = current_font()
     write_chromium_extension(cfg, family)
-    ensure_chromium_flags()
-    grok = cfg["surfaces"]["grok-bot"]
-    write_grok_fontconfig(family, grok["enabled"])
-    write_grok_desktop(grok["enabled"])
-    write_youtube_desktop(cfg["surfaces"]["youtube"]["enabled"])
-    if grok["enabled"]:
-        inject_cdp(Path("/tmp/grok-bot-devtools-port"), grok_bot_css(family, grok["scale"]))
-        # launch-grok writes this; also try common Electron debug port file
-        inject_cdp(Path.home() / ".config/Grok Bot/DevToolsActivePort", grok_bot_css(family, grok["scale"]))
-    am = cfg["surfaces"]["apple-music"]
-    if am["enabled"]:
-        inject_cdp(AM_PROFILE / "DevToolsActivePort", apple_music_css(family, am["scale"]))
+    ensure_chromium_flags(cfg, family)
+    write_fontconfig(cfg, family)
+    grok = find_app(cfg, "grok-bot")
+    write_grok_desktop(bool(grok and app_active(cfg, grok)))
+    youtube = find_app(cfg, "youtube")
+    write_youtube_desktop(bool(youtube and app_active(cfg, youtube)))
+    clear_chromium_ui(family)
+    if grok and app_active(cfg, grok):
+        css = css_for_app(grok, family)
+        inject_cdp(Path("/tmp/grok-bot-devtools-port"), css)
+        inject_cdp(Path.home() / ".config/Grok Bot/DevToolsActivePort", css)
+    am = find_app(cfg, "apple-music")
+    if am and app_active(cfg, am):
+        inject_cdp(AM_PROFILE / "DevToolsActivePort", css_for_app(am, family))
+    if youtube and app_active(cfg, youtube):
+        yt_port = Path("/tmp/omarchy-type-youtube-devtools")
+        if not yt_port.is_file():
+            yt_port.write_text("9340\n", encoding="utf-8")
+        inject_cdp(yt_port, css_for_app(youtube, family))
     save_config(cfg)
     print(json.dumps({"ok": True, "font": family, "config": cfg}, indent=2))
     return 0
 
 
-def set_surface(sid: str, enabled: bool | None = None, scale: float | None = None) -> int:
-    if sid not in {s["id"] for s in SURFACES}:
-        log(f"unknown surface {sid}")
-        return 1
+def set_master(enabled: bool) -> int:
     cfg = load_config()
-    if enabled is not None:
-        cfg["surfaces"][sid]["enabled"] = enabled
-    if scale is not None:
-        cfg["surfaces"][sid]["scale"] = round(max(0.7, min(1.2, float(scale))), 2)
+    cfg["enabled"] = enabled
     save_config(cfg)
     return apply()
 
 
+def set_app(app_id: str, enabled: bool | None = None, scale: float | None = None) -> int:
+    cfg = load_config()
+    app = find_app(cfg, app_id)
+    if not app:
+        log(f"unknown app {app_id}")
+        return 1
+    if enabled is not None:
+        app["enabled"] = enabled
+    if scale is not None:
+        app["scale"] = clamp_scale(scale)
+    save_config(cfg)
+    return apply()
+
+
+def add_app(desktop_id: str) -> int:
+    path = find_desktop_path(desktop_id)
+    if not path:
+        log(f"desktop not found: {desktop_id}")
+        return 1
+    app = desktop_to_app(path)
+    if not app or app["kind"] not in COMPATIBLE_KINDS:
+        log(f"not a webapp or Electron app: {desktop_id}")
+        return 1
+    cfg = load_config()
+    if find_app(cfg, app["id"]) or any(a.get("desktop") == app["desktop"] for a in cfg["apps"]):
+        log(f"already added {app['id']}")
+        return apply()
+    cfg["apps"].append(app)
+    save_config(cfg)
+    return apply()
+
+
+def remove_app(app_id: str) -> int:
+    cfg = load_config()
+    next_apps = [a for a in cfg["apps"] if a["id"] != app_id]
+    if len(next_apps) == len(cfg["apps"]):
+        log(f"unknown app {app_id}")
+        return 1
+    cfg["apps"] = next_apps
+    save_config(cfg)
+    return apply()
+
+
+def _proc_exe(pid: int) -> str:
+    try:
+        return os.readlink(f"/proc/{pid}/exe")
+    except OSError:
+        return ""
+
+
+def _proc_cmdline(pid: int) -> list[str]:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return []
+    return [p.decode("utf-8", "replace") for p in raw.split(b"\0") if p]
+
+
+def _class_needles(app: dict) -> list[str]:
+    if app["id"] == "youtube":
+        return ["youtube.com__"]
+    if app["id"] == "apple-music":
+        return ["music.apple.com__"]
+    if app["id"] == "grok-bot":
+        return ["Grok Bot"]
+    return [f"{h}__" for h in app.get("hosts") or []]
+
+
+def pids_for_app(app: dict) -> list[int]:
+    found: list[int] = []
+    try:
+        clients = json.loads(subprocess.check_output(["hyprctl", "clients", "-j"], text=True))
+    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
+        clients = []
+    needles = _class_needles(app)
+    if isinstance(clients, list):
+        for client in clients:
+            cls = str(client.get("class") or "")
+            if any(n in cls for n in needles):
+                pid = client.get("pid")
+                if isinstance(pid, int) and pid > 1:
+                    found.append(pid)
+    hosts = app.get("hosts") or []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        argv = _proc_cmdline(pid)
+        if not argv:
+            continue
+        line = " ".join(argv)
+        if "apply.py" in line:
+            continue
+        exe = _proc_exe(pid)
+        if app["id"] == "grok-bot":
+            if "grok-bot" in exe or any("grok-bot" in a for a in argv):
+                found.append(pid)
+            continue
+        if "chromium" not in exe and "chrome" not in Path(exe).name:
+            continue
+        if app["id"] == "apple-music" and "omarchy-apple-music" in line:
+            found.append(pid)
+            continue
+        app_url = next((a[6:] for a in argv if a.startswith("--app=")), "")
+        if app_url and hosts and any(h in app_url for h in hosts):
+            found.append(pid)
+    return list(dict.fromkeys(found))
+
+
+def kill_pids(pids: list[int]) -> None:
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        if not any(Path(f"/proc/{pid}").exists() for pid in pids):
+            return
+        time.sleep(0.1)
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def launch_app(app: dict) -> None:
+    if app["id"] == "youtube":
+        cmd = [str(PLUGIN_DIR / "scripts" / "launch-youtube")]
+    elif app["id"] == "grok-bot":
+        cmd = [str(PLUGIN_DIR / "scripts" / "launch-grok")]
+    else:
+        desktop = find_desktop_path(app.get("desktop") or "")
+        parsed = parse_desktop(desktop) if desktop else {}
+        exec_line = parsed.get("Exec") or ""
+        try:
+            parts = shlex.split(exec_line, posix=True)
+        except ValueError:
+            parts = exec_line.split()
+        cmd = [p for p in parts if p not in ("%U", "%u", "%F", "%f")]
+        if not cmd:
+            return
+    subprocess.Popen(cmd, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def restart_app(app_id: str) -> int:
+    cfg = load_config()
+    app = find_app(cfg, app_id)
+    if not app:
+        log(f"unknown app {app_id}")
+        return 1
+    running = pids_for_app(app)
+    rc = apply()
+    if running:
+        kill_pids(running)
+        time.sleep(0.35)
+    cfg = load_config()
+    app = find_app(cfg, app_id)
+    if app and app_active(cfg, app) and running:
+        launch_app(app)
+    return rc
+
+
 def main(argv: list[str]) -> int:
     cmd = argv[1] if len(argv) > 1 else "apply"
-    if cmd in ("apply", "refresh"):
+    if cmd == "apply":
+        return apply()
+    if cmd == "refresh":
+        if len(argv) >= 3:
+            return restart_app(argv[2])
         return apply()
     if cmd == "status":
         print(json.dumps({"font": current_font(), "config": load_config()}, indent=2))
         return 0
-    if cmd == "enable" and len(argv) >= 3:
-        return set_surface(argv[2], enabled=True)
-    if cmd == "disable" and len(argv) >= 3:
-        return set_surface(argv[2], enabled=False)
+    if cmd == "apps":
+        print(json.dumps(list_installed_apps(load_config()), indent=2))
+        return 0
+    if cmd == "add" and len(argv) >= 3:
+        return add_app(argv[2])
+    if cmd == "remove" and len(argv) >= 3:
+        return remove_app(argv[2])
+    if cmd == "enable":
+        if len(argv) >= 3:
+            return set_app(argv[2], enabled=True)
+        return set_master(True)
+    if cmd == "disable":
+        if len(argv) >= 3:
+            return set_app(argv[2], enabled=False)
+        return set_master(False)
     if cmd == "scale" and len(argv) >= 4:
-        return set_surface(argv[2], scale=float(argv[3]))
-    if cmd == "toggle" and len(argv) >= 3:
+        rc = set_app(argv[2], scale=float(argv[3]))
+        if rc == 0:
+            restart_app(argv[2])
+        return rc
+    if cmd == "toggle":
         cfg = load_config()
-        sid = argv[2]
-        if sid not in cfg["surfaces"]:
-            log(f"unknown surface {sid}")
-            return 1
-        return set_surface(sid, enabled=not cfg["surfaces"][sid]["enabled"])
-    print("Usage: apply.py apply|status|enable <id>|disable <id>|toggle <id>|scale <id> <0.7-1.2>", file=sys.stderr)
+        if len(argv) >= 3:
+            app = find_app(cfg, argv[2])
+            if not app:
+                log(f"unknown app {argv[2]}")
+                return 1
+            return set_app(argv[2], enabled=not app["enabled"])
+        return set_master(not cfg.get("enabled", True))
+    print(
+        "Usage: apply.py apply|status|apps|add <desktop>|remove <id>|"
+        "enable [id]|disable [id]|toggle [id]|scale <id> <0.7-1.2>|refresh <id>",
+        file=sys.stderr,
+    )
     return 2
 
 

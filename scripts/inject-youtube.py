@@ -61,8 +61,8 @@ INJECT = r"""
 
 def main() -> int:
     cfg = type_apply.load_config()
-    row = cfg["surfaces"].get("youtube") or {}
-    if not row.get("enabled"):
+    row = type_apply.find_app(cfg, "youtube")
+    if not row or not type_apply.app_active(cfg, row):
         return 0
     family = type_apply.current_font()
     css = type_apply.youtube_css(family, float(row.get("scale") or 1.0))

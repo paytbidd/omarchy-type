@@ -51,7 +51,7 @@ BarWidget {
   Text {
     id: glyph
     anchors.centerIn: parent
-    text: "Aa"
+    text: "Tt"
     color: root.fg
     font.family: bar ? bar.fontFamily : Style.font.family
     font.pixelSize: Style.font.caption

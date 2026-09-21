@@ -18,7 +18,7 @@ omarchy plugin enable payton.type --section right
 
 Or copy this directory to `~/.config/omarchy/plugins/payton.type` and enable it.
 
-Click **Aa** on the bar, or Super+Space → Style → Type. Toggles write `~/.config/omarchy/type.json` and
+Click **Tt** on the bar, or Super+Space → Style → Type. Toggles write `~/.config/omarchy/type.json` and
 regenerate a Chromium content-script extension loaded via
 `~/.config/chromium-flags.conf`. Reopen a webapp after changing membership.
 `omarchy font set` re-applies through `~/.config/omarchy/hooks/font-set.d/omarchy-type`.

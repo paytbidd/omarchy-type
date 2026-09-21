@@ -16,6 +16,7 @@ BarWidget {
   readonly property color fg: bar ? bar.foreground : Color.foreground
 
   function open() { popupOpen = true }
+  function openFromHotkey() { popupOpen = true }
   function close() { popupOpen = false }
   function toggle() { popupOpen = !popupOpen }
 
@@ -103,25 +104,29 @@ BarWidget {
     Column {
       id: body
       width: parent.width
-      spacing: Style.space(10)
+      spacing: Style.space(8)
 
-      Column {
+      Row {
         width: parent.width
-        spacing: Style.space(2)
+        spacing: Style.space(8)
+
         Text {
-          text: "Omarchy Type"
+          text: "Type"
           color: root.fg
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
           font.pixelSize: Style.font.subtitle
           font.bold: true
+          anchors.verticalCenter: parent.verticalCenter
         }
+
         Text {
-          width: parent.width
-          wrapMode: Text.WordWrap
-          text: root.fontName !== "" ? ("Font: " + root.fontName) : "Uses the current Omarchy font."
-          color: Qt.darker(root.fg, 1.4)
+          text: root.fontName !== "" ? root.fontName : "Omarchy font"
+          color: Qt.darker(root.fg, 1.45)
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
           font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+          width: parent.width - Style.space(64)
+          anchors.verticalCenter: parent.verticalCenter
         }
       }
 
@@ -132,57 +137,78 @@ BarWidget {
           id: surfaceRow
           required property var modelData
           readonly property string surfaceId: modelData.id
+          readonly property bool on: !!(root.config.surfaces[surfaceId] && root.config.surfaces[surfaceId].enabled)
           width: body.width
-          spacing: Style.space(4)
+          spacing: Style.space(6)
 
-          Row {
+          BorderSurface {
             width: parent.width
-            spacing: Style.space(8)
+            implicitHeight: rowInner.implicitHeight + Style.space(12)
+            radius: Style.cornerRadius
+            color: rowMouse.containsMouse
+              ? Style.hoverFillFor(root.fg, root.fg)
+              : (surfaceRow.on ? Style.normalFillFor(root.fg, root.fg) : "transparent")
+            borderSpec: surfaceRow.on
+              ? Border.controlSpec("normal", root.fg, root.fg)
+              : Border.none()
 
-            Text {
-              width: parent.width - includeSwitch.width - Style.space(8)
+            Row {
+              id: rowInner
+              anchors.left: parent.left
+              anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
-              text: modelData.label
-              color: root.fg
-              font.family: root.bar ? root.bar.fontFamily : Style.font.family
-              font.pixelSize: Style.font.body
-              elide: Text.ElideRight
-            }
+              anchors.leftMargin: Style.space(10)
+              anchors.rightMargin: Style.space(10)
+              spacing: Style.space(8)
 
-            Text {
-              id: includeSwitch
-              readonly property bool on: !!(root.config.surfaces[modelData.id] && root.config.surfaces[modelData.id].enabled)
-              text: on ? "On" : "Off"
-              color: root.fg
-              font.family: root.bar ? root.bar.fontFamily : Style.font.family
-              font.pixelSize: Style.font.body
-              font.bold: on
-              anchors.verticalCenter: parent.verticalCenter
-              Accessible.role: Accessible.Button
-              Accessible.name: (on ? "Disable " : "Enable ") + modelData.label
-              MouseArea {
-                anchors.fill: parent
-                anchors.margins: -Style.space(4)
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.setEnabled(modelData.id, !includeSwitch.on)
+              Column {
+                width: parent.width - toggleLabel.implicitWidth - Style.space(8)
+                spacing: Style.space(1)
+                Text {
+                  width: parent.width
+                  text: surfaceRow.modelData.label
+                  color: root.fg
+                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                  font.pixelSize: Style.font.body
+                  elide: Text.ElideRight
+                }
+                Text {
+                  width: parent.width
+                  text: surfaceRow.modelData.description
+                  color: Qt.darker(root.fg, 1.5)
+                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                  font.pixelSize: Style.font.caption
+                  elide: Text.ElideRight
+                }
+              }
+
+              Text {
+                id: toggleLabel
+                text: surfaceRow.on ? "On" : "Off"
+                color: root.fg
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.body
+                font.bold: surfaceRow.on
+                anchors.verticalCenter: parent.verticalCenter
               }
             }
-          }
 
-          Text {
-            width: parent.width
-            wrapMode: Text.WordWrap
-            text: modelData.description
-            color: Qt.darker(root.fg, 1.5)
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.caption
+            MouseArea {
+              id: rowMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              Accessible.role: Accessible.Button
+              Accessible.name: (surfaceRow.on ? "Disable " : "Enable ") + surfaceRow.modelData.label
+              onClicked: root.setEnabled(surfaceRow.surfaceId, !surfaceRow.on)
+            }
           }
 
           Row {
             width: parent.width
-            spacing: Style.space(8)
-            visible: includeSwitch.on
+            spacing: Style.space(6)
+            visible: surfaceRow.on
+            leftPadding: Style.space(10)
 
             Repeater {
               model: [0.8, 0.86, 0.92, 1.0, 1.08]
@@ -196,13 +222,13 @@ BarWidget {
                   return Math.abs(current - scaleValue) < 0.01
                 }
                 text: Math.round(scaleValue * 100) + "%"
-                color: selected ? root.fg : Qt.darker(root.fg, 1.5)
+                color: selected ? root.fg : Qt.darker(root.fg, 1.55)
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                 font.pixelSize: Style.font.caption
                 font.bold: selected
                 MouseArea {
                   anchors.fill: parent
-                  anchors.margins: -Style.space(2)
+                  anchors.margins: -Style.space(3)
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
                   onClicked: root.setScale(surfaceRow.surfaceId, scaleValue)
@@ -211,15 +237,6 @@ BarWidget {
             }
           }
         }
-      }
-
-      Text {
-        width: parent.width
-        wrapMode: Text.WordWrap
-        text: "Reopen a webapp to pick up Chromium extension changes. Grok Bot applies on the next launch."
-        color: Qt.darker(root.fg, 1.6)
-        font.family: root.bar ? root.bar.fontFamily : Style.font.family
-        font.pixelSize: Style.font.caption
       }
     }
   }

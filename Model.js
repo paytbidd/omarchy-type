@@ -11,7 +11,7 @@ var SURFACES = [
     hosts: ["music.apple.com"],
     defaultEnabled: true,
     defaultScale: 0.92,
-    description: "SF Pro replacement, 92% type scale, stronger sidebar hover."
+    description: "Web player"
   },
   {
     id: "grok-bot",
@@ -20,7 +20,7 @@ var SURFACES = [
     hosts: [],
     defaultEnabled: true,
     defaultScale: 1.0,
-    description: "Cursor/VS Code font variables plus fontconfig remap."
+    description: "Desktop agent"
   },
   {
     id: "youtube",
@@ -29,7 +29,7 @@ var SURFACES = [
     hosts: ["youtube.com", "www.youtube.com", "youtu.be", "m.youtube.com"],
     defaultEnabled: false,
     defaultScale: 0.94,
-    description: "Roboto replacement on the YouTube webapp."
+    description: "Webapp"
   }
 ]
 

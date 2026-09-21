@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "payton.type",
+  "name": "Omarchy Type",
+  "version": "1.0.0",
+  "author": "Payton Biddington",
+  "description": "Apply the Omarchy font to Chromium webapps, starting with Apple Music, Grok Bot, and YouTube.",
+  "homepage": "https://github.com/paytbidd/omarchy-type",
+  "license": "MIT",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "TypeWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Type",
+    "description": "Omarchy font on Chromium apps",
+    "category": "Appearance",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

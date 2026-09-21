@@ -1,0 +1,5 @@
+#!/bin/bash
+# Launch Grok Bot with CDP so Omarchy Type can inject CSS after React mounts.
+set -euo pipefail
+python3 "$(dirname "$0")/inject-grok.py" >/tmp/omarchy-type-grok-inject.log 2>&1 &
+exec /usr/bin/grok-bot --remote-debugging-port=9339 --remote-allow-origins=* "$@"

@@ -1,0 +1,19 @@
+#!/bin/bash
+set -euo pipefail
+DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+PLUGIN="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/payton.type"
+HOOK="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/hooks/font-set.d/omarchy-type"
+mkdir -p "$(dirname "$PLUGIN")" "$(dirname "$HOOK")"
+if [[ "$DIR" != "$PLUGIN" ]]; then
+  rsync -a --delete --exclude .git "$DIR/" "$PLUGIN/"
+fi
+chmod +x "$PLUGIN/scripts/"*
+cat >"$HOOK" <<HOOK
+#!/bin/bash
+exec python3 "$PLUGIN/scripts/apply.py" apply
+HOOK
+chmod +x "$HOOK"
+python3 "$PLUGIN/scripts/apply.py" apply
+omarchy plugin enable payton.type --section right --yes 2>/dev/null || \
+  omarchy plugin enable payton.type --section right || true
+echo "Omarchy Type installed. Click Aa on the bar."

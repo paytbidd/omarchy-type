@@ -20,6 +20,8 @@ FLAGS_PATH = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "chromi
 EXT_DIR = Path(os.environ.get("XDG_DATA_HOME", HOME / ".local/share")) / "omarchy-type" / "chromium-ext"
 FONTCONF = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "fontconfig" / "conf.d" / "51-omarchy-type-grok.conf"
 GROK_DESKTOP = Path(os.environ.get("XDG_DATA_HOME", HOME / ".local/share")) / "applications" / "grok-bot.desktop"
+YT_DESKTOP = Path(os.environ.get("XDG_DATA_HOME", HOME / ".local/share")) / "applications" / "YouTube.desktop"
+OMARCHY_CHROMIUM_EXTS = Path("/usr/share/omarchy/default/chromium/extensions")
 AM_PROFILE = Path(os.environ.get("XDG_DATA_HOME", HOME / ".local/share")) / "omarchy-apple-music" / "chromium-profile"
 PLUGIN_DIR = Path(__file__).resolve().parent.parent
 
@@ -152,12 +154,16 @@ def write_chromium_extension(cfg: dict, family: str) -> None:
             if not host.startswith("www."):
                 matches.append(f"https://www.{host}/*")
     EXT_DIR.mkdir(parents=True, exist_ok=True)
+    (EXT_DIR / "sw.js").write_text("self.addEventListener('install', () => {});\n", encoding="utf-8")
+    match_list = sorted(set(matches)) or ["https://example.invalid/*"]
     (EXT_DIR / "manifest.json").write_text(json.dumps({
         "manifest_version": 3,
         "name": "Omarchy Type",
-        "version": "1.0.0",
+        "version": "1.0.1",
+        "background": {"service_worker": "sw.js"},
+        "host_permissions": match_list,
         "content_scripts": [{
-            "matches": sorted(set(matches)) or ["https://example.invalid/*"],
+            "matches": match_list,
             "js": ["inject.js"],
             "run_at": "document_start",
             "all_frames": True,
@@ -245,6 +251,23 @@ def write_grok_desktop(enabled: bool) -> None:
         encoding="utf-8",
     )
     GROK_DESKTOP.chmod(0o755)
+
+
+def write_youtube_desktop(enabled: bool) -> None:
+    launch = PLUGIN_DIR / "scripts" / "launch-youtube"
+    if not YT_DESKTOP.is_file():
+        return
+    text = YT_DESKTOP.read_text(encoding="utf-8")
+    stock = "Exec=omarchy-launch-webapp https://youtube.com/"
+    typed = f"Exec={launch}"
+    if enabled:
+        if "launch-youtube" not in text:
+            text = re.sub(r"^Exec=.*$", typed, text, count=1, flags=re.M)
+            YT_DESKTOP.write_text(text, encoding="utf-8")
+    else:
+        if "launch-youtube" in text:
+            text = re.sub(r"^Exec=.*$", stock, text, count=1, flags=re.M)
+            YT_DESKTOP.write_text(text, encoding="utf-8")
 
 
 def _ws_send(sock: socket.socket, payload: str) -> None:
@@ -340,6 +363,7 @@ def apply() -> int:
     grok = cfg["surfaces"]["grok-bot"]
     write_grok_fontconfig(family, grok["enabled"])
     write_grok_desktop(grok["enabled"])
+    write_youtube_desktop(cfg["surfaces"]["youtube"]["enabled"])
     if grok["enabled"]:
         inject_cdp(Path("/tmp/grok-bot-devtools-port"), grok_bot_css(family, grok["scale"]))
         # launch-grok writes this; also try common Electron debug port file

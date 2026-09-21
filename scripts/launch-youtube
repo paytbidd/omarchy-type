@@ -1,0 +1,20 @@
+#!/bin/bash
+# Launch the YouTube webapp with Omarchy Type on --load-extension.
+# Super+Y focuses an existing window and will not pick this up until YouTube
+# is actually quit and opened again.
+set -euo pipefail
+URL="${1:-https://youtube.com/}"
+if [[ $URL == %U || $URL == "" ]]; then
+  URL="https://youtube.com/"
+fi
+TYPE_EXT="${XDG_DATA_HOME:-$HOME/.local/share}/omarchy-type/chromium-ext"
+python3 "$(dirname "$0")/inject-youtube.py" >/tmp/omarchy-type-youtube-inject.log 2>&1 &
+OMARCHY_EXTS="/usr/share/omarchy/default/chromium/extensions"
+LOAD="$OMARCHY_EXTS/copy-url,$OMARCHY_EXTS/yt-dlp,$OMARCHY_EXTS/whatsapp-slim"
+if [[ -f $TYPE_EXT/manifest.json ]]; then
+  LOAD="$LOAD,$TYPE_EXT"
+fi
+exec omarchy-launch-webapp "$URL" \
+  --load-extension="$LOAD" \
+  --remote-debugging-port=9340 \
+  --remote-allow-origins=*
